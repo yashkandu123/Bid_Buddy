@@ -12,7 +12,7 @@ from .api_service import (
     build_segmented_project_totals,
 )
 from .calculation_engine import by_key
-from .position_parser import ExtractedPosition
+from .position_parser import ExtractedPosition, _record_type_for_unit
 from .product_matching import _catalogue_conflicts, calculate_matched_position
 
 
@@ -234,6 +234,8 @@ def _position_from_row(row: dict[str, Any]) -> ExtractedPosition:
         original_unit=row.get("original_unit", row["unit"]),
         source_line=row.get("source_line", ""),
         evidence=row.get("evidence", ""),
+        # Legacy results predate component/missing-quantity records; retain the parser's unit semantics.
+        record_type=row.get("record_type", _record_type_for_unit(row.get("original_unit") or row["unit"])),
         technical_attributes=row.get("technical_attributes", {}),
     )
 

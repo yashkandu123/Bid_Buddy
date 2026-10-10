@@ -1,5 +1,15 @@
 # Project Phase Status
 
+## Review reconstruction compatibility fix (2026-10-10)
+
+- Fixed review_state.py::_position_from_row, the only ExtractedPosition constructor that omitted record_type. The parser constructor already supplies it correctly.
+- Current rows retain their explicit source record_type. Older saved results lack the field; reconstruction uses the existing parser's original-unit rule (hour units -> labour_service; other legacy units -> tender_position). No new dataclass default or response-schema field added.
+- Added tests/test_review_state_compatibility.py: full parser/reconstruction round trip for all four record types, explicit type preserved after a unit edit, legacy unit semantics and legacy recalculation without payload-schema changes.
+- Bundled Python command: `-m unittest tests.test_bid_optimization.BidOptimizationApiTests.test_job_bid_scenarios_use_saved_review_state tests.test_jobs.Phase4JobTests.test_final_offer_pdf_excludes_supplier_package_estimates tests.test_jobs.Phase4JobTests.test_final_offer_pdf_exports_only_accepted_calculated_prices tests.test_jobs.Phase4JobTests.test_insufficient_and_non_priceable_positions_stay_excluded_after_override tests.test_jobs.Phase4JobTests.test_product_change_with_dimension_mismatch_stays_review_only tests.test_jobs.Phase4JobTests.test_review_edit_is_saved_reloaded_and_recalculates_totals tests.test_jobs.Phase4JobTests.test_supplier_quote_required_override_remains_provisional tests.test_review_state_compatibility`: 11 passed, zero failures/errors/skips (seven previously failing tests plus four new tests).
+- Then `C:/Users/saiya/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe -m unittest discover -s tests`: 99 passed in 14.030 seconds, zero failures/errors/skips. Golden tests and 22-reference production-path subtests ran as part of this suite; references unchanged. The malformed-PDF negative test emits its existing EOF diagnostic; suite succeeds.
+- Pricing formulas, approval/exclusion rules, supplier-package provisional handling, dimension-conflict safeguards, fixtures and persisted outputs unchanged. No external calls, commits or pushes. Only review_state.py, new compatibility tests and this status file changed.
+- No remaining backend test failure observed. Earlier entries describing seven errors are historical. Remaining Phase B matching/coverage and commercial limitations are unaffected; recommendation: review them separately before broader commercial validation. No next phase started.
+
 ## Project organization update (2026-10-10)
 
 - Moved 18 phase/audit documents into docs/project, docs/architecture and docs/decisions; moved three loose outputs into outputs/legacy_root and instruction ZIP into archive. 22 moves total; full log and inventories in outputs/project_organization/.
