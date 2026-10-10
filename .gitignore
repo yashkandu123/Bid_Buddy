@@ -1,0 +1,53 @@
+# Local environment and secret files
+.env
+.env.*
+!.env.example
+
+# Python dependencies, bytecode and local tooling
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.bak
+*.key
+*.pem
+*.pfx
+
+# Local uploads, job state and regenerable output artifacts
+/runtime_data/
+/outputs/legacy_root/
+/outputs/**/renders/
+/outputs/phase8h_phase_b2_matching/source_page_*.png
+/evaluation/ai_matching_results*.json
+
+# Frontend dependencies and build output
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/coverage/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+
+# Tender and company materials — keep local until approved
+/BKP_244_LV_Lueftung_260804.pdf
+/Equans_Slides.pdf
+/Equans logo.jpg
+
+# Generated tender results and pricing outputs
+/outputs/*
+!/outputs/README.md
+
+# Local project-specific configuration and commercial data
+/catalog.csv
+/productivity.csv
+/project_parameters.json
