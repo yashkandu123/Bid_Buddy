@@ -7,6 +7,12 @@ from typing import Any
 
 from .calculation_engine import by_key, money, resolve_factor_multiplier
 from .position_parser import ExtractedPosition
+from .semantic_matching import (
+    concepts_for_text,
+    rank_semantic_candidates,
+    repair_extraction_text,
+    semantic_conflicts,
+)
 
 
 GERMAN_ENGLISH_SYNONYMS = {
@@ -32,11 +38,12 @@ def match_positions(
     catalog: list[dict[str, str]],
     productivity: list[dict[str, str]],
     parameters: dict[str, Any],
+    ai_provider: Any | None = None,
 ) -> list[dict[str, Any]]:
     catalog_by_id = by_key(catalog, "product_id")
     productivity_by_code = by_key(productivity, "install_code")
     matched = [
-        match_and_price_position(position, catalog_by_id, productivity_by_code, parameters)
+        match_and_price_position(position, catalog_by_id, productivity_by_code, parameters, ai_provider)
         for position in positions
     ]
     annotate_duplicate_candidates(matched)
@@ -48,8 +55,9 @@ def classify_position(
     catalog_by_id: dict[str, dict[str, str]],
     productivity_by_code: dict[str, dict[str, str]],
     parameters: dict[str, Any],
+    ai_provider: Any | None = None,
 ) -> dict[str, Any]:
-    product_id, confidence, method, reason = select_catalog_product(position, catalog_by_id)
+    product_id, confidence, method, reason = select_catalog_product(position, catalog_by_id, ai_provider)
     result: dict[str, Any] = {
         **position.to_dict(),
         "matched_product_id": product_id,
@@ -119,8 +127,9 @@ def match_and_price_position(
     catalog_by_id: dict[str, dict[str, str]],
     productivity_by_code: dict[str, dict[str, str]],
     parameters: dict[str, Any],
+    ai_provider: Any | None = None,
 ) -> dict[str, Any]:
-    result = classify_position(position, catalog_by_id, productivity_by_code, parameters)
+    result = classify_position(position, catalog_by_id, productivity_by_code, parameters, ai_provider)
     product = catalog_by_id.get(result.get("matched_product_id"))
     if product and product["install_code"] in productivity_by_code:
         result.update(calculate_matched_position(
@@ -205,6 +214,7 @@ def calculate_matched_position(
 def select_catalog_product(
     position: ExtractedPosition,
     catalog_by_id: dict[str, dict[str, str]],
+    ai_provider: Any | None = None,
 ) -> tuple[str | None, float, str, str]:
     if position.quantity <= 0:
         return None, 0.0, "unmatched", "missing or ambiguous quantity is not eligible for automatic catalogue pricing"
@@ -213,8 +223,13 @@ def select_catalog_product(
     text = _normalise(matching_context(position))
     source_line = _normalise(position.source_line)
     expanded_text = _expand_german_synonyms(text)
-    product_id = _rule_based_product_id(text, source_line, position.unit)
-    if product_id and product_id in catalog_by_id:
+    control = _control_candidate(source_line, text)
+    if control is not None:
+        if control in catalog_by_id and catalog_by_id[control]["unit"] == position.unit:
+            return control, 0.7, "deterministic_cross_language", "German field-device candidate; catalogue omits technical specifications, estimator confirmation required"
+        return None, 0.0, "unmatched", "field-device specifications are not covered by the catalogue"
+    product_id = _rule_based_product_id(text, source_line, position.unit, position.source_line)
+    if product_id and product_id in catalog_by_id and catalog_by_id[product_id]["unit"] == position.unit:
         return (
             product_id,
             _confidence_for_product(catalog_by_id[product_id]),
@@ -223,6 +238,57 @@ def select_catalog_product(
         )
     if _has_unsupported_specific_product_cue(text, source_line):
         return None, 0.0, "unmatched", "specific technical variant is not covered by the catalogue"
+
+    semantic_source = (
+        position.source_line
+        if concepts_for_text(position.source_line)
+        else matching_context(position)
+    )
+    semantic = rank_semantic_candidates(
+        text=semantic_source,
+        unit=position.unit,
+        technical_attributes=position.technical_attributes,
+        catalog=list(catalog_by_id.values()),
+        limit=8,
+    )
+    if ai_provider is not None and semantic:
+        assisted = _validated_ai_selection(position, catalog_by_id, ai_provider)
+        if assisted is not None:
+            return assisted
+    semantic_with_family = [
+        candidate for candidate in semantic
+        if any(item.startswith("component type:") for item in candidate.evidence)
+    ]
+    exact_semantic = [
+        candidate
+        for candidate in semantic_with_family
+        if _semantic_exact_match_is_safe(position, candidate, catalog_by_id[candidate.product_id])
+    ]
+    if len(exact_semantic) == 1:
+        candidate = exact_semantic[0]
+        return (
+            candidate.product_id,
+            0.9,
+            "multilingual_exact_technical_match",
+            "Unique multilingual component-family match with exact technical evidence; "
+            + "; ".join(candidate.evidence),
+        )
+    if semantic_with_family:
+        candidate = semantic_with_family[0]
+        return (
+            candidate.product_id,
+            0.7,
+            "multilingual_semantic_candidate",
+            "Local German/English/French semantic retrieval for estimator review; "
+            + "; ".join(candidate.evidence),
+        )
+    if concepts_for_text(position.source_line):
+        return (
+            None,
+            0.0,
+            "unmatched",
+            "Local component family is not represented by a compatible catalogue product",
+        )
 
     best_id: str | None = None
     best_score = 0
@@ -244,12 +310,72 @@ def select_catalog_product(
     return None, 0.0, "unmatched", "no defensible catalogue match"
 
 
+def _semantic_exact_match_is_safe(
+    position: ExtractedPosition,
+    candidate: Any,
+    product: dict[str, str],
+) -> bool:
+    required_prefixes: list[str] = []
+    attributes = position.technical_attributes
+    if attributes.get("dimensions"):
+        required_prefixes.append("dimensions=")
+    if attributes.get("diameters"):
+        required_prefixes.append("diameter=")
+    if attributes.get("fire_ratings"):
+        required_prefixes.append("fire_rating=")
+    if not required_prefixes and any(
+        item.startswith("insulation_thickness=") for item in candidate.evidence
+    ):
+        required_prefixes.append("insulation_thickness=")
+    if not required_prefixes or not all(
+        any(item.startswith(prefix) for item in candidate.evidence)
+        for prefix in required_prefixes
+    ):
+        return False
+    if attributes.get("ambiguous_dimensions"):
+        return False
+    if _catalogue_conflicts(position, product):
+        return False
+    source_text = " ".join((position.original_description, position.source_line))
+    return not semantic_conflicts(
+        source_text=source_text,
+        technical_attributes=position.technical_attributes,
+        candidate=product,
+    )
+
+
+def _validated_ai_selection(
+    position: ExtractedPosition,
+    catalog_by_id: dict[str, dict[str, str]],
+    provider: Any,
+) -> tuple[str, float, str, str] | None:
+    from .ai_matching_experiment import build_position_input, run_ai_matching_case
+
+    record = position.to_dict()
+    record.update({"status": "insufficient_information", "matched_product_id": None})
+    result = run_ai_matching_case(build_position_input(record), list(catalog_by_id.values()), provider)
+    validated = result.get("ai_result") or {}
+    product_id = validated.get("recommended_product_id")
+    if validated.get("safe_decision") != "accept" or product_id not in catalog_by_id:
+        return None
+    flags = validated.get("validation_flags", [])
+    if flags:
+        return None
+    return (
+        product_id,
+        0.7,
+        "validated_ai_candidate_review",
+        "Provider selected a bounded catalogue candidate; deterministic validation passed; pricing remains review-only.",
+    )
+
+
 def _confidence_for_product(product: dict[str, str]) -> float:
     return 0.72 if product["supplier_quote_required"].strip().lower() == "true" else 0.9
 
 
 def _normalise(value: str) -> str:
-    value = value.lower()
+    value = repair_extraction_text(value).lower()
+    value = re.sub(r"(?<=\d),(?=\d)", ".", value)
     replacements = {
         "?": "oe",
         "�": "oe",
@@ -317,6 +443,29 @@ def _catalogue_conflicts(position: ExtractedPosition, product: dict[str, str]) -
     product_text = _normalise(" ".join([product["model"], product["description"]]))
     source_text = " ".join([position.original_description, position.source_line])
     attrs = position.technical_attributes
+    normalized_source = _normalise(source_text)
+    if "polyurethan" in normalized_source and "polyurethan" not in product_text:
+        conflicts.append(
+            {
+                "code": "material_not_confirmed",
+                "message": (
+                    "Tender specifies polyurethane construction, which is not confirmed "
+                    "by the catalogue candidate."
+                ),
+            }
+        )
+    source_angles = _bend_angles(position.source_line, matching_context(position))
+    product_angles = _catalogue_bend_angles(product)
+    if source_angles and product_angles and source_angles.isdisjoint(product_angles):
+        conflicts.append(
+            {
+                "code": "bend_angle_mismatch",
+                "message": (
+                    f"Extracted bend angles {sorted(source_angles)} degrees do not match "
+                    f"catalogue bend angles {sorted(product_angles)} degrees."
+                ),
+            }
+        )
     if re.search(r"\d+\s+St(?:ue|ü)ck pro Durchf", context, re.IGNORECASE):
         conflicts.append({"code": "quantity_basis_requires_confirmation", "message": "Source counts penetrations and specifies multiple angles per penetration; catalogue set scope must be confirmed."})
     if "KOSD" in context and re.search(r"L[aä]nge\s+[?Ø]", context):
@@ -383,7 +532,41 @@ def _catalogue_conflicts(position: ExtractedPosition, product: dict[str, str]) -
                 "message": f"Extracted fire ratings {sorted(position_fire_ratings)} do not match catalogue fire ratings {sorted(product_fire_ratings)}.",
             }
         )
+    existing_codes = {flag["code"] for flag in conflicts}
+    for flag in semantic_conflicts(
+        source_text=source_text,
+        technical_attributes=attrs,
+        candidate=product,
+    ):
+        if flag["code"] not in existing_codes:
+            conflicts.append(flag)
+            existing_codes.add(flag["code"])
     return conflicts
+
+
+def _bend_angles(source_line: str, context: str) -> set[float]:
+    text = f"{source_line} {context}"
+    if not re.search(r"\b(?:bogen|bend|coude)\b", text, re.IGNORECASE):
+        return set()
+    return {
+        float(match.group(1).replace(",", "."))
+        for match in re.finditer(r"\b(\d+(?:[.,]\d+)?)\s*(?:°|�)", text)
+    }
+
+
+def _catalogue_bend_angles(product: dict[str, str]) -> set[float]:
+    text = " ".join((product.get("model", ""), product.get("description", "")))
+    if not re.search(r"\b(?:bend|bogen|coude|B\d+[- ])", text, re.IGNORECASE):
+        return set()
+    angles = {
+        float(match.group(1))
+        for match in re.finditer(r"\b(\d+(?:\.\d+)?)\s*°", text)
+    }
+    angles.update(
+        float(match.group(1))
+        for match in re.finditer(r"\bB(\d{2,3})[- ]", text, re.IGNORECASE)
+    )
+    return angles
 
 
 def _catalogue_diameters_mm(text: str) -> list[float]:
@@ -469,8 +652,9 @@ def _any_dimension_match(
     return False
 
 
-def _rule_based_product_id(text: str, source_line: str, unit: str) -> str | None:
+def _rule_based_product_id(text: str, source_line: str, unit: str, raw_source_line: str) -> str | None:
     combined = f"{text} {source_line}"
+    diameters = _source_line_diameters_mm(raw_source_line)
     if unit == "pc":
         variant = re.match(r"tvr d (12\.5|16|20)\b", source_line)
         if variant:
@@ -488,15 +672,15 @@ def _rule_based_product_id(text: str, source_line: str, unit: str) -> str | None
             return {"30": "P-INS-001", "60": "P-INS-002", "100": "P-INS-003"}[thicknesses[-1][1]]
     if unit == "pc":
         if "tellerventil" in combined and "zuluft" in combined:
-            if "12.5" in source_line:
+            if 125 in diameters:
                 return "P-AIR-002"
-            if "10" in source_line:
+            if 100 in diameters:
                 return "P-AIR-001"
-        if "tellerventil" in combined and "abluft" in combined and "10" in source_line:
+        if "tellerventil" in combined and "abluft" in combined and 100 in diameters:
             return "P-AIR-003"
-        if "brandschutzklappe" in combined or "ei 90" in combined or "fkrs" in combined or "fk2" in combined:
+        if "brandschutzklappe" in combined or "fkrs" in combined or "fk2" in combined:
             return "P-FIR-001"
-        if "drosselklappen" in combined and "12.5" in source_line:
+        if "drosselklappe" in combined and 125 in diameters:
             return "P-DAM-001"
         if "schalldoempfer" in combined or "schalld" in combined or "ms f" in combined or "kulissen" in combined:
             if "40 x 30 x 125" in combined or "300x400x1250" in combined:
@@ -522,7 +706,7 @@ def _rule_based_product_id(text: str, source_line: str, unit: str) -> str | None
                 return "P-VAV-004"
             if source_line.startswith("tvr d 20"):
                 return "P-VAV-005"
-            if "vfc" in combined and ("250" in source_line or "dn250" in combined):
+            if "vfc" in combined and 250 in diameters:
                 return "P-CAV-001"
         if "300 x 200" in combined and (
             "ei30" in combined or "durchdringungen" in combined or "kanalverstaerkungs" in combined
@@ -641,11 +825,27 @@ def _looks_non_priceable_or_assembly(text: str) -> bool:
 
 
 def _has_unsupported_specific_product_cue(text: str, source_line: str) -> bool:
-    if "vfc" in text and "250" not in source_line and "dn250" not in text:
+    if "vfc" in text:
         return True
     if "rohrschalldaempfer" in text or "rohrschalldoempfer" in text:
         return True
     return False
+
+
+def _control_candidate(source_line: str, context: str) -> str | None:
+    # These are review candidates, not specification-complete equivalences.
+    if "druckdifferenzfuehler" in source_line:
+        return "P-CTL-001"
+    if "temperatur" in source_line and "fuehler" in source_line:
+        return "" if "feuchte" in source_line else "P-CTL-002"
+    if "volumenstromfuehler" in source_line:
+        return "P-CTL-004"
+    if "drehantrieb" in source_line or "stellantrieb" in source_line:
+        voltages = set(re.findall(r"\b(\d+)\s*v\b", context))
+        return "P-CTL-003" if voltages == {"24"} else ""
+    if "druckwaechter" in source_line or "frostschutzwaechter" in source_line:
+        return ""  # A switch is not a pressure/temperature transmitter.
+    return None
 
 
 def _has_technical_product_term(text: str) -> bool:

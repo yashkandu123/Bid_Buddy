@@ -1,0 +1,18 @@
+# Steps 2 & 3 integration bundle -- runtime requirements
+#
+# REQUIRED for the Docling front-end:
+docling>=2.137
+#
+# REQUIRED for the fallback parser + pricing engine:
+pandas>=2.1
+numpy>=1.26
+pdfplumber>=0.11
+#
+# Nothing else: the LLM client is stdlib-only and talks the
+# OpenAI-compatible HTTP API (OpenAI / DeepSeek / OpenRouter / local).
+#
+# NOTE: docling pins websockets<17. If your project also runs Streamlit,
+# check that downgrade or install docling in its own virtualenv.
+#
+# For the tests:
+pytest>=8

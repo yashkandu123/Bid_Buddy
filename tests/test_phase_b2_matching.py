@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from scripts.reconcile_phase_b2 import read_rows, evaluate_inventory, reference_comparison
+from scripts.reconcile_phase_b2 import associate, read_rows, evaluate_inventory, reference_comparison
 from src.tender_pricing.data_loading import load_project_data
 from src.tender_pricing.pdf_ingestion import extract_pdf_text_pages, PdfPageText
 from src.tender_pricing.position_parser import parse_lv_positions, parse_page_positions
@@ -69,6 +69,22 @@ class PhaseB2MatchingTests(unittest.TestCase):
         for row in results:
             self.assertNotIn('direct_position_cost_chf', row)
             self.assertFalse(row['pricing_authorized'])
+
+    def test_page_78_regen_cowl_associates_from_source_evidence(self):
+        page = extract_pdf_text_pages(ROOT / 'BKP_244_LV_Lueftung_260804.pdf', [78])[0]
+        positions = parse_page_positions(page)
+        candidate = next(
+            row for row in read_rows(
+                ROOT / 'outputs/phase8h_extraction_correction/corrected_candidates.jsonl'
+            )
+            if row['corrected_candidate_id'] == 'P8H078-001'
+        )
+
+        position, occurrences = associate(candidate, positions)
+
+        self.assertEqual(position.source_line, 'B x H 110 x 35 cm Stk 1')
+        self.assertEqual((position.quantity, position.unit), (1.0, 'pc'))
+        self.assertEqual(occurrences, 1)
 
 
 if __name__ == '__main__':

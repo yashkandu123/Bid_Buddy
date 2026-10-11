@@ -1,0 +1,62 @@
+INTEGRATION BUNDLE -- tender pipeline steps 2 & 3
+=================================================
+
+Copy these into your project, preserving the layout:
+
+    pipeline/            <- the two new steps (this is what you asked for)
+      __init__.py
+      config.py          LLMConfig / ExtractConfig / MatchConfig
+      llm.py             pluggable OpenAI-compatible client + StubLLM + cache
+      step2_extract.py   Docling front-end + LLM schema mapping (LV pages only)
+      step3_match.py     translate + retrieve + rerank matching
+    engine/              <- REQUIRED at runtime (see note below)
+      parser.py          deterministic fallback parser (step 2)
+      matcher.py         deterministic rule matcher (step 3 fallback)
+      pricing.py         the pricing engine (step 4) -- already yours
+    tests/
+      test_pipeline.py   13 tests, no API key needed
+
+USAGE
+-----
+    from pipeline import extract_positions, match_positions
+    from pipeline import LLMConfig, ExtractConfig, MatchConfig
+
+    llm = LLMConfig(provider="openai", model="gpt-4o-mini")   # or deepseek/openrouter/custom
+
+    positions = extract_positions(pdf_bytes, llm_config=llm, config=ExtractConfig())     # STEP 2
+    matched   = match_positions(positions, catalog, llm_config=llm, config=MatchConfig()) # STEP 3
+
+    # feed straight into your pricing engine (step 4)
+    import numpy as np, pandas as pd
+    df = pd.DataFrame(matched)
+    df["include"] = True                    # reviewer column, your project owns it
+    df["custom_unit_cost_chf"] = np.nan
+    calc = calc_positions(df, catalog, productivity, sim)
+
+WHY engine/ IS IN HERE
+----------------------
+The pipeline imports engine/ ONLY as a fallback:
+
+  step2_extract.py  ->  engine.parser.parse_tender     (when Docling is absent)
+  step3_match.py    ->  engine.matcher.match_position  (when the LLM is off / fails)
+
+So if you ship Docling + an API key and never want the fallback, you can delete
+those imports -- but they are the safety net that keeps the pipeline running when
+a call fails, so keeping them is recommended.
+
+The full API reference, the integration contract, and the enforced guardrails are
+in pipeline/README.md.
+
+VERIFICATION (measured on the bundled tender)
+---------------------------------------------
+    18 tests pass (13 new + 5 existing)
+    step2 + step3 (rule path) reproduce the locked baseline EXACTLY:
+      263 positions, cost baseline CHF 1,697,469.34, 0 of 263 rows differing
+
+IMPORTANT CAVEAT
+----------------
+No LLM API key was available when this was built, so every LLM path was verified
+with a stub client (canned replies). The wiring, JSON parsing, guards, caching and
+fallbacks are genuinely exercised, but NO REAL MODEL CALL has been made yet.
+
+    set OPENAI_API_KEY=...        (or DEEPSEEK_API_KEY / OPENROUTER_API_KEY)

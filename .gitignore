@@ -8,9 +8,13 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+.venv-*/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
 .vscode/
 .idea/
 .DS_Store
@@ -37,6 +41,16 @@ frontend/coverage/
 frontend/*.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts
+npm-debug.log*
+
+# Local experiments, diagnostics and presentation media
+/.agents/
+/.docling-diagnostic-*/
+/evaluation/phase2b_*/
+/video clips/
+/Bid Buddy_ Tender to Contender.png
+/assets/
+/priced_offer.pdf
 
 # Tender and company materials — keep local until approved
 /BKP_244_LV_Lueftung_260804.pdf
@@ -46,8 +60,3 @@ frontend/vite.config.d.ts
 # Generated tender results and pricing outputs
 /outputs/*
 !/outputs/README.md
-
-# Local project-specific configuration and commercial data
-/catalog.csv
-/productivity.csv
-/project_parameters.json

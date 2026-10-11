@@ -148,6 +148,14 @@ B x H 110 x 35 cm Stk 1
         self.assertEqual(positions[0].unit, "pc")
         self.assertEqual(positions[0].quantity, 1.0)
 
+    def test_lowercase_hour_units_remain_supported(self) -> None:
+        positions = parse_page_positions(
+            PdfPageText(page_number=1, text="Montageleistung h 21\nInbetriebnahme 8 h")
+        )
+
+        self.assertEqual([(row.quantity, row.unit) for row in positions], [(21.0, "h"), (8.0, "h")])
+        self.assertTrue(all(row.record_type == "labour_service" for row in positions))
+
     def test_dotted_symbol_and_split_units_are_parsed_without_losing_source_unit(self) -> None:
         text = """
 SH Erlenstrasse Oberglatt 244.02 LA02 Essenraeume EG Seite 19 / 27

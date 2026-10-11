@@ -46,6 +46,7 @@ class FullTenderOutputRequest(BaseModel):
 
 class PositionReviewPatch(BaseModel):
     quantity: float | None = None
+    net_unit_cost_chf: float | None = None
     unit: Literal["pc", "m", "m2", "h", "LS", "system"] | None = None
     matched_product_id: str | None = None
     estimator_notes: str | None = None

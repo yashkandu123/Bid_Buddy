@@ -36,7 +36,7 @@ export function PositionTable({
               <td>
                 <StatusBadge status={position.status} />
               </td>
-              <td>{position.matched_product_id ?? "—"}</td>
+              <td>{position.matched_product_id ?? "—"}{position.review_state?.overridden_fields.includes("net_unit_cost_chf") ? <span className="status-badge">Edited unit cost</span> : null}</td>
               <td>{pct(position.match_confidence)}</td>
               <td>{chf(position.accepted_direct_position_cost_chf ?? undefined)}</td>
             </tr>

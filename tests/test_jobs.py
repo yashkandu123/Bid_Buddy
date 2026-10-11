@@ -206,6 +206,19 @@ class Phase4JobTests(unittest.TestCase):
         with self.assertRaises(ReviewValidationError):
             self.store.update_position_review(record.job_id, "PDF001-01", {"direct_position_cost_chf": 1})
 
+    def test_unit_cost_override_persists_after_restart_and_pdf_uses_recalculation(self) -> None:
+        record = self.store.create_job(_pdf_bytes(_known_position_lines()), original_filename="demo.pdf")
+        updated = self.store.update_position_review(record.job_id, "PDF001-01", {"quantity": 10, "net_unit_cost_chf": 100})
+        row = updated["positions"][0]
+        self.assertEqual(row["material_cost_chf"], 1040)
+        restarted = JobStore(PROJECT_ROOT, upload_root=self.temp_dir, run_synchronously=True)
+        reloaded = restarted.get_result(record.job_id)["positions"][0]
+        self.assertEqual(reloaded["net_unit_cost_chf"], 100)
+        self.assertEqual(reloaded["accepted_direct_position_cost_chf"], row["direct_position_cost_chf"])
+        report = restarted.generate_final_offer_pdf(record.job_id)
+        mapping = next(p for p in report["mapped_positions"] if p["lv_id"] == row["lv_id"])
+        self.assertEqual(mapping["position_total_chf"], row["direct_position_cost_chf"])
+
     def test_product_change_with_dimension_mismatch_stays_review_only(self) -> None:
         record = self.store.create_job(_pdf_bytes(_known_position_lines()), original_filename="demo.pdf")
 
@@ -327,6 +340,9 @@ def _pdf_bytes(lines: list[str]) -> io.BytesIO:
 
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer)
+    page_height = 841.8898
+    for x in (440.2, 488.3, 562.0):
+        pdf.line(x, 40, x, page_height - 40)
     y = 800
     for line in lines:
         pdf.drawString(40, y, line)

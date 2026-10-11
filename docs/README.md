@@ -15,6 +15,9 @@ Run all documented commands from the project root unless a command explicitly ch
 - [Bid scenarios](project/README_PHASE8D.md)
 - [PDF prototype](project/README_PHASE8E.md)
 - [PDF export](project/README_PHASE8F.md)
+- [Deployment readiness](project/DEPLOYMENT_READINESS.md)
+- [Pipeline bundle audit](project/PHASE2B_PIPELINE_BUNDLE_AUDIT.md)
+- [UI improvements](project/UI_IMPROVEMENTS.md)
 
 ## Architecture and Decisions
 

@@ -6,6 +6,7 @@ import { chf, pct } from "../app/format";
 import type { BidScenariosResponse } from "../app/types";
 import { PageHeader } from "../components/PageHeader";
 import { UnavailablePanel } from "../components/UnavailablePanel";
+import { WorkflowFooter } from "../components/WorkflowFooter";
 
 export function BidOptimizationPage() {
   const params = useParams();
@@ -56,7 +57,7 @@ export function BidOptimizationPage() {
 
   return (
     <div className="page-stack">
-      <PageHeader eyebrow="04 · Decide" title="Bid optimization">
+      <PageHeader eyebrow="03 · Decide" title="Bid optimization">
         Deterministic scenario prices come from the backend. Win probability is a configured heuristic, not a calibrated
         prediction from historical bid data.
       </PageHeader>
@@ -110,16 +111,12 @@ export function BidOptimizationPage() {
               <dt>Supplier quotes</dt>
               <dd>{payload.cost_basis.supplier_quotes_outstanding} outstanding</dd>
             </dl>
+            {payload.warnings.map((warning) => (
+              <p className={`inline-message ${warning.severity === "error" ? "error" : "warning"}`} key={warning.code}>
+                {warning.message}
+              </p>
+            ))}
           </section>
-
-          {payload.warnings.length ? (
-            <section className="content-panel warning-panel">
-              <strong>Scenario warnings</strong>
-              {payload.warnings.map((warning) => (
-                <span key={warning.code}>{warning.message}</span>
-              ))}
-            </section>
-          ) : null}
 
           <section className="scenario-grid" aria-label="Bid scenarios">
             {payload.scenarios.map((scenario) => (
@@ -168,24 +165,10 @@ export function BidOptimizationPage() {
               </article>
             ))}
           </section>
-
-          <section className="content-panel">
-            <p className="eyebrow">Model assumptions</p>
-            <dl className="definition-grid">
-              <dt>Bid price</dt>
-              <dd>{payload.formula_audit.bid_price_formula}</dd>
-              <dt>Cost basis</dt>
-              <dd>{payload.formula_audit.cost_basis}</dd>
-              <dt>Probability</dt>
-              <dd>{payload.formula_audit.probability_model}</dd>
-              <dt>Contribution</dt>
-              <dd>{payload.formula_audit.expected_contribution_definition}</dd>
-            </dl>
-            {saveMessage ? <p className="inline-message success">{saveMessage}</p> : null}
-            {error ? <p className="inline-message error">{error}</p> : null}
-          </section>
+          {saveMessage ? <p className="inline-message success">{saveMessage}</p> : null}
         </>
       ) : null}
+      <WorkflowFooter previous={{ to: `/review/${jobId ?? ""}`, label: "Estimate & Review" }} next={{ to: `/final/${jobId ?? ""}`, label: "Final Offer" }} disabledReason={payload?.selection.scenario_name && !isSaving ? undefined : "Save a bid scenario selection to continue."} />
     </div>
   );
 }

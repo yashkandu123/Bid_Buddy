@@ -27,22 +27,36 @@ Add the public tender PDF beside these files before the event.
 - [Documentation index](docs/README.md): phase guides, architecture and audit decisions.
 - `src/tender_pricing/`: current Python application; API entry point `src.tender_pricing.api:app`.
 - `frontend/`: React + Vite application; `tests/` and `scripts/`: tests and validation utilities.
-- `outputs/`: preserved phase artifacts; loose historical results moved to `outputs/legacy_root/`.
-- `evaluation/`: isolated matching experiments; `runtime_data/`: local uploads, jobs and acceptance artifacts.
+- `data/`: versioned runtime manifests; `outputs/`: local generated phase artifacts.
+- `evaluation/`: local matching results; `runtime_data/`: local uploads, jobs and acceptance artifacts.
+- `experiments/`: isolated, non-production prototypes and compatibility bundles.
 - `archive/`: preserved instruction ZIP; authoritative instructions remain at root.
 
 Reference CSV/JSON files and original PDFs remain at root because application and test paths depend on them. Documentation commands run from the project root. Root `BASELINE_RECONCILIATION.md` remains the API's named warning document. No colleague implementation was found in the recursive inventory.
 
-See [organization report](outputs/project_organization/organization_report.md) for the complete move log, preserved-file checks and known test failures. Review tender, company assets and derived data for confidentiality before publishing; `.gitignore` is not publication approval.
+Review tender, company assets and derived data for confidentiality before publishing; `.gitignore` is not publication approval.
 
 ## Quick start
-Start the local app from PowerShell:
+Install once from PowerShell (Python 3.12+ and Node.js 20+):
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r .\requirements.txt
+Push-Location .\frontend
+npm ci
+Pop-Location
+```
+
+Start the local app from the project root:
 
 ```powershell
 python .\run_sprintd.py
 ```
 
 The launcher starts the FastAPI backend and Vite frontend, then opens the UI at `http://127.0.0.1:5173/`. API docs are available at `http://127.0.0.1:8000/docs`. Press `Ctrl+C` in the launcher terminal to stop both services.
+
+The application runs without AI credentials. Optional real-provider experiments require explicit opt-in and local values copied from `.env.example` into an ignored `.env` file.
 
 ```python
 import pandas as pd, json

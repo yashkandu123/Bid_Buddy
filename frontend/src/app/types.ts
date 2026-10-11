@@ -184,6 +184,7 @@ export type ProductCategory = {
 
 export type PositionReviewPatch = {
   quantity?: number;
+  net_unit_cost_chf?: number | null;
   unit?: string;
   matched_product_id?: string | null;
   estimator_notes?: string;

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from src.tender_pricing.ai_matching_experiment import (
     AIMatchingValidationError,
@@ -18,7 +20,9 @@ from src.tender_pricing.ai_matching_experiment import (
     load_jsonl,
     retrieve_catalogue_candidates,
     run_ai_matching_case,
+    run_page_batched_experiment,
     run_experiment,
+    validate_page_ai_ranker_output,
     validate_ai_ranker_output,
 )
 from src.tender_pricing.data_loading import load_project_data
@@ -74,6 +78,10 @@ class Phase5AIMatchingExperimentTests(unittest.TestCase):
 
         self.assertIn("Abluft - Tellerventil", prompt_case["position"]["original_german_description"])
         self.assertEqual(len(prompt_case["catalogue_candidates"]), 3)
+        self.assertEqual(
+            {row["product_id"] for row in prompt_case["catalogue_candidates"]},
+            {"P-AIR-001", "P-AIR-002", "P-AIR-003"},
+        )
         self.assertNotIn("list_price_chf", prompt_case["catalogue_candidates"][0])
         self.assertIn("Do not invent products", prompt_case["task"])
 
@@ -121,6 +129,77 @@ class Phase5AIMatchingExperimentTests(unittest.TestCase):
         self.assertEqual(result["safe_decision"], "review")
         self.assertFalse(result["pricing_authorized"])
         self.assertIn("diameter_mismatch", {flag["code"] for flag in result["validation_flags"]})
+
+    def test_supplier_package_accept_is_downgraded_to_review(self) -> None:
+        record = {
+            "lv_id": "SUPPLIER-1",
+            "source_page": 1,
+            "source_language": "de",
+            "original_description": "Schalldämpfer 400x300x1250 mm Stk 1",
+            "source_line": "400x300x1250 mm Stk 1",
+            "quantity": 1,
+            "unit": "pc",
+            "technical_attributes": {
+                "dimensions": [{"values_mm": [400, 300, 1250]}],
+            },
+            "status": "review_required",
+        }
+        result = run_ai_matching_case(
+            build_position_input(record),
+            self.data["catalog"],
+            FakeAIProvider(decision="accept", recommended_product_id="P-SIL-001"),
+        )
+
+        self.assertEqual(result["ai_result"]["safe_decision"], "review")
+        self.assertFalse(result["ai_result"]["pricing_authorized"])
+        self.assertIn(
+            "supplier_quote_required",
+            {flag["code"] for flag in result["ai_result"]["validation_flags"]},
+        )
+
+    def test_local_smoke_detector_cannot_inherit_actuator_candidate(self) -> None:
+        position = build_position_input({
+            "lv_id": "CONTROL-CONTEXT-1",
+            "source_page": 1,
+            "source_language": "de",
+            "original_description": "Drehantrieb AC/DC 24 V Stk 2 Kanalrauchmelder Stk 1",
+            "source_line": "Kanalrauchmelder Stk 1",
+            "quantity": 1,
+            "unit": "pc",
+            "technical_attributes": {},
+            "status": "review_required",
+        })
+        candidate = next(
+            row for row in self.data["catalog"] if row["product_id"] == "P-CTL-003"
+        )
+        bounded_candidate = {
+            key: candidate[key]
+            for key in (
+                "product_id", "category", "subcategory", "manufacturer", "model",
+                "description", "unit", "install_code", "source_type",
+                "supplier_quote_required",
+            )
+        }
+        bounded_candidate["supplier_quote_required"] = False
+        result = validate_ai_ranker_output(
+            {
+                "lv_id": "CONTROL-CONTEXT-1",
+                "ranked_candidates": [{"product_id": "P-CTL-003"}],
+                "ambiguity": [],
+                "recommendation": "accept",
+                "recommended_product_id": "P-CTL-003",
+                "rationale": "bad inherited-context match",
+            },
+            {"P-CTL-003"},
+            position,
+            [bounded_candidate],
+        )
+
+        self.assertEqual(result["safe_decision"], "review")
+        self.assertIn(
+            "component_type_mismatch",
+            {flag["code"] for flag in result["validation_flags"]},
+        )
 
     def test_fake_provider_abstention_runs_without_network_or_costs(self) -> None:
         position = build_position_input(self.sample_records[9])
@@ -248,6 +327,178 @@ class Phase5AIMatchingExperimentTests(unittest.TestCase):
         self.assertEqual(evaluation["status"], "evaluated")
         self.assertEqual(evaluation["labelled_count"], 1)
         self.assertEqual(evaluation["top1_accuracy"], 1.0)
+
+    def test_review_ranking_is_scored_without_treating_it_as_price_authority(self) -> None:
+        records = [dict(self.sample_records[0])]
+        records[0]["human_labels"] = {
+            "confirmed_product_id": "P-AIR-003",
+            "technical_compatibility": "conflict_requires_review",
+            "priceability": "uncertain",
+            "confidence": "high",
+        }
+        result = run_ai_matching_case(
+            build_position_input(records[0]),
+            self.data["catalog"],
+            FakeAIProvider(decision="review"),
+        )
+
+        evaluation = evaluate_against_human_labels(records, [result])
+
+        self.assertEqual(evaluation["top1_accuracy"], 1.0)
+        self.assertEqual(evaluation["safe_calculation_candidate_count"], 0)
+
+    def test_page_batch_preserves_source_association_and_never_authorizes_pricing(self) -> None:
+        records = [dict(self.sample_records[0]), dict(self.sample_records[1])]
+        records[1]["source"] = dict(records[1].get("source", {}), source_page=79)
+        records[1]["machine_values"] = dict(records[1].get("machine_values", {}), source_page=79)
+
+        payload = run_page_batched_experiment(
+            records,
+            self.data["catalog"],
+            FakeAIProvider(decision="review"),
+            max_candidates=3,
+        )
+
+        self.assertEqual(payload["page_batch_count"], 1)
+        self.assertEqual(len(payload["batch_metrics"]), 1)
+        self.assertEqual(payload["batch_metrics"][0]["position_count"], 2)
+        self.assertEqual(payload["record_count"], 2)
+        self.assertTrue(all(row["page_batch_size"] == 2 for row in payload["results"]))
+        self.assertTrue(all(row["evaluation_ready"] for row in payload["results"]))
+        self.assertTrue(all(not row["ai_result"]["pricing_authorized"] for row in payload["results"]))
+
+    def test_page_validation_rejects_wrong_source_line_quantity_and_unit(self) -> None:
+        position = build_position_input(self.sample_records[0])
+        candidates = retrieve_catalogue_candidates(position, self.data["catalog"], max_candidates=3)
+        base = FakeAIProvider(decision="review").rank_page(
+            [{"position": position, "candidates": candidates}]
+        )[0]
+        for field, wrong, message in (
+            ("source_line", "another row", "source line"),
+            ("quantity", float(position["quantity"]) + 1, "quantity"),
+            ("unit", "m", "unit"),
+        ):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(AIMatchingValidationError, message):
+                    validate_page_ai_ranker_output({**base, field: wrong}, position, candidates)
+
+    def test_rule_llm_product_conflict_is_review_only(self) -> None:
+        position = build_position_input(self.sample_records[0])
+        candidates = retrieve_catalogue_candidates(position, self.data["catalog"], max_candidates=3)
+        conflicting_id = next(
+            candidate["product_id"]
+            for candidate in candidates
+            if candidate["product_id"] != position["deterministic_match"]["matched_product_id"]
+        )
+        output = FakeAIProvider(
+            decision="accept", recommended_product_id=conflicting_id
+        ).rank_page([{"position": position, "candidates": candidates}])[0]
+
+        validated = validate_page_ai_ranker_output(output, position, candidates)
+
+        self.assertEqual(validated["safe_decision"], "review")
+        self.assertFalse(validated["pricing_authorized"])
+        self.assertIn(
+            "rule_llm_product_conflict",
+            {flag["code"] for flag in validated["validation_flags"]},
+        )
+
+    def test_real_page_provider_caches_only_successful_structured_response(self) -> None:
+        position = build_position_input(self.sample_records[0])
+        candidates = retrieve_catalogue_candidates(position, self.data["catalog"], max_candidates=3)
+        selected = candidates[0]["product_id"]
+        body = {
+            "positions": [
+                {
+                    "position_id": position["position_id"],
+                    "source_page": position["source_page"],
+                    "source_line": position["source_line"],
+                    "quantity": position["quantity"],
+                    "unit": position["unit"],
+                    "ranked_candidates": [
+                        {
+                            "product_id": selected,
+                            "confidence": 0.7,
+                            "evidence": ["bounded test candidate"],
+                            "technical_mismatches": [],
+                            "missing_evidence": [],
+                        }
+                    ],
+                    "ambiguity": [],
+                    "recommendation": "review",
+                    "recommended_product_id": None,
+                    "rationale": "test",
+                }
+            ]
+        }
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "output_text": json.dumps(body),
+            "usage": {"input_tokens": 20, "output_tokens": 10},
+        }
+        with tempfile.TemporaryDirectory(dir=PROJECT_ROOT) as temp_dir:
+            provider = OpenAIResponsesProvider(
+                api_key="test-key",
+                enabled=True,
+                cache_dir=Path(temp_dir),
+            )
+            with patch("httpx.post", return_value=response) as post:
+                first = provider.rank_page([{"position": position, "candidates": candidates}])
+                second = provider.rank_page([{"position": position, "candidates": candidates}])
+
+        self.assertEqual(first, second)
+        self.assertEqual(post.call_count, 1)
+        self.assertTrue(provider.last_cache_hit)
+
+    def test_page_batch_provider_failure_preserves_deterministic_fallback(self) -> None:
+        payload = run_page_batched_experiment(
+            [self.sample_records[0]],
+            self.data["catalog"],
+            FakeAIProvider(fail=True),
+            max_candidates=3,
+        )
+
+        result = payload["results"][0]
+        expected = build_position_input(self.sample_records[0])["deterministic_match"]
+        self.assertIsNotNone(result["provider_error"])
+        self.assertIsNone(result["ai_result"])
+        self.assertEqual(result["deterministic_fallback"], expected)
+
+    def test_missing_required_candidate_diameter_downgrades_accept(self) -> None:
+        position = {
+            "position_id": "REQUIRED-DN-1",
+            "source_page": 1,
+            "source_language": "de",
+            "original_german_description": "Bauteil DN100",
+            "source_line": "Bauteil DN100 Stk 1",
+            "quantity": 1.0,
+            "unit": "pc",
+            "technical_attributes": {"diameters": [{"value_mm": 100.0}]},
+            "current_status": "review_required",
+            "deterministic_match": {"matched_product_id": None, "conflict_flags": []},
+        }
+        catalog_row = next(row for row in self.data["catalog"] if row["product_id"] == "P-CTL-003")
+        candidate = {
+            key: catalog_row[key]
+            for key in (
+                "product_id", "category", "subcategory", "manufacturer", "model",
+                "description", "unit", "install_code", "source_type",
+            )
+        }
+        candidate["supplier_quote_required"] = False
+        output = FakeAIProvider(
+            decision="accept", recommended_product_id=candidate["product_id"]
+        ).rank_page([{"position": position, "candidates": [candidate]}])[0]
+
+        validated = validate_page_ai_ranker_output(output, position, [candidate])
+
+        self.assertEqual(validated["safe_decision"], "review")
+        self.assertIn(
+            "diameter_not_confirmed",
+            {flag["code"] for flag in validated["validation_flags"]},
+        )
+        self.assertFalse(validated["pricing_authorized"])
 
 
 if __name__ == "__main__":

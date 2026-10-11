@@ -48,9 +48,9 @@ export function FinalOfferPage() {
 
   return (
     <div className="page-stack">
-      <PageHeader eyebrow="05 · Validate" title="Final offer">
-        Generate a priced PDF from the uploaded tender using only accepted calculated rows from the current review
-        state. Review-only and provisional supplier rows stay visible in the validation summary.
+      <PageHeader eyebrow="04 · Validate" title="Final offer">
+        Generate your priced tender PDF using confirmed prices.
+        Positions requiring review or supplier quotations are clearly identified in the validation summary.
       </PageHeader>
 
       {!jobId ? (
@@ -75,14 +75,11 @@ export function FinalOfferPage() {
               <button className="secondary-button" type="button" onClick={() => loadExistingReport(jobId)} disabled={isLoading}>
                 <RefreshCcw size={18} /> Refresh
               </button>
-              <button className="primary-button" type="button" onClick={handleGenerate} disabled={isGenerating}>
-                <FileCheck2 size={18} /> {isGenerating ? "Generating..." : "Generate PDF"}
-              </button>
             </div>
           </div>
           <p>
-            The export overlays unit and position totals only where the backend validates a unique price-cell mapping.
-            Ambiguous rows are left blank.
+            Your tender PDF will include prices for positions that have been verified and approved.
+            Positions that need further clarification will remain unpriced and be highlighted in the validation summary.
           </p>
           {error ? (
             <p className="inline-message error">
@@ -178,6 +175,14 @@ export function FinalOfferPage() {
           </section>
         </>
       ) : null}
+      <footer className="workflow-footer">
+        <Link className="secondary-button" to={`/bid/${jobId ?? ""}`}>Back to Bid Optimization</Link>
+        <div>
+          {!jobId ? <p className="inline-message">Select a completed upload job to generate a PDF.</p> : null}
+          <button className="primary-button" type="button" onClick={handleGenerate} disabled={!jobId || isGenerating}><FileCheck2 size={18} />{isGenerating ? "Generating..." : "Generate PDF"}</button>
+          {report ? <a className="primary-button" href={finalOfferPdfUrl(report.job_id)} target="_blank" rel="noreferrer"><Download size={18} /> Download Estimate</a> : null}
+        </div>
+      </footer>
     </div>
   );
 }

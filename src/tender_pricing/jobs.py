@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import os
 import shutil
 import threading
 import uuid
@@ -34,6 +35,7 @@ from .review_state import (
     empty_review_state,
     validate_review_patch,
 )
+from .user_inventory import project_user_facing_inventory
 
 
 JOB_STATUS_QUEUED = "queued"
@@ -147,6 +149,7 @@ class JobStore:
         if not result_path.exists():
             raise FileNotFoundError("Stored job result is missing.")
         result = json.loads(result_path.read_text(encoding="utf-8"))
+        result = project_user_facing_inventory(result, self.project_root)
         return apply_review_state(result, load_project_data(self.project_root), self.get_review_state(job_id))
 
     def get_review_state(self, job_id: str) -> dict[str, Any]:
@@ -165,6 +168,7 @@ class JobStore:
         result_path = (self.upload_root / record.result_path).resolve()
         _assert_within_root(result_path, self.upload_root)
         result = json.loads(result_path.read_text(encoding="utf-8"))
+        result = project_user_facing_inventory(result, self.project_root)
         base_position = next((row for row in result["positions"] if row["lv_id"] == lv_id), None)
         if not base_position:
             raise KeyError(lv_id)
@@ -288,11 +292,12 @@ class JobStore:
             result = process_uploaded_pdf(uploaded_pdf, self.project_root, job_id=job_id)
             result_path = self._job_dir(job_id) / "result.json"
             result_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+            user_result = project_user_facing_inventory(result, self.project_root)
             self._update(
                 job_id,
                 status=JOB_STATUS_COMPLETED,
                 completed_at=_utc_now(),
-                position_counts_by_status=result["status_counts"],
+                position_counts_by_status=user_result["status_counts"],
                 result_path=str(result_path.relative_to(self.upload_root)),
             )
         except Exception as exc:  # noqa: BLE001 - job runner must always record failure
@@ -361,18 +366,36 @@ class JobStore:
             upload_filename=source_pdf.name,
             stored_filename=source_pdf.name,
             upload_size_bytes=source_pdf.stat().st_size,
-            position_counts_by_status=result.get("status_counts", {}),
+            position_counts_by_status=project_user_facing_inventory(result, self.project_root).get("status_counts", {}),
             result_path=str(result_path.relative_to(self.upload_root)),
         )
 
 
 def process_uploaded_pdf(pdf_path: Path, project_root: Path, job_id: str) -> dict[str, Any]:
     data = load_project_data(project_root)
-    pages = extract_pdf_text_pages(pdf_path)
+    pages = extract_pdf_text_pages(
+        pdf_path,
+        backend=os.getenv("TENDER_PDF_BACKEND", "pdfplumber").strip().lower(),
+    )
     positions = parse_lv_positions(pages)
     if not positions:
         raise RuntimeError("PDF text extraction produced no priceable position candidates.")
-    priced_rows = match_positions(positions, data["catalog"], data["productivity"], data["parameters"])
+    ai_provider = None
+    provider_name = os.getenv("TENDER_MATCH_PROVIDER", "").strip().lower()
+    if provider_name:
+        from .ai_matching_experiment import create_provider
+
+        ai_provider = create_provider(
+            provider_name,
+            fake_decision=os.getenv("TENDER_AI_FAKE_DECISION", "review").strip().lower(),
+        )
+    priced_rows = match_positions(
+        positions,
+        data["catalog"],
+        data["productivity"],
+        data["parameters"],
+        ai_provider=ai_provider,
+    )
     positions_payload = [_normalise_position_payload(row, data) for row in priced_rows]
     status_counts: dict[str, int] = {}
     for row in positions_payload:
