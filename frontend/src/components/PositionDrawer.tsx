@@ -1,9 +1,10 @@
 import { Save, X } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { chf } from "../app/format";
 import { updatePositionReview } from "../app/apiClient";
 import type { CatalogItem, TenderPosition, TenderResult } from "../app/types";
 import { StatusBadge } from "./StatusBadge";
+import { useReviewNavigation } from "../app/ReviewNavigationContext";
 
 export function PositionDrawer({
   position,
@@ -19,20 +20,51 @@ export function PositionDrawer({
   onSaved: (result: TenderResult) => void;
 }) {
   const [quantity, setQuantity] = useState("");
+  const [unitCost, setUnitCost] = useState("");
+  const [costEdited, setCostEdited] = useState(false);
   const [unit, setUnit] = useState("pc");
   const [productId, setProductId] = useState("");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setSaving] = useState(false);
+  const saveTimer = useRef<number | undefined>(undefined);
+  const saving = useRef(false);
+  const { setPending } = useReviewNavigation();
+  const savedCost = String(position?.net_unit_cost_chf ?? catalog.find(item => item.product_id === position?.matched_product_id)?.net_cost_chf ?? "");
+  const dirty = Boolean(position && (
+    quantity !== String(position.quantity) || unit !== position.unit || productId !== (position.matched_product_id ?? "") ||
+    notes !== (position.review_state?.estimator_notes ?? "") || unitCost !== savedCost
+  ));
+
+  useEffect(() => { setPending(dirty || isSaving); }, [dirty, isSaving, setPending]);
+  useEffect(() => () => setPending(false), [setPending]);
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
 
   useEffect(() => {
     if (!position) return;
     setQuantity(String(position.quantity));
+    setUnitCost(String(position.net_unit_cost_chf ?? catalog.find(item => item.product_id === position.matched_product_id)?.net_cost_chf ?? ""));
+    setCostEdited(position.review_state?.overridden_fields.includes("net_unit_cost_chf") ?? false);
     setUnit(position.unit);
     setProductId(position.matched_product_id ?? "");
     setNotes(position.review_state?.estimator_notes ?? "");
     setError(null);
   }, [position]);
+
+  useEffect(() => {
+    if (!position || !jobId || isSaving) return;
+    const savedCost = String(position.net_unit_cost_chf ?? catalog.find(item => item.product_id === position.matched_product_id)?.net_cost_chf ?? "");
+    if (quantity === String(position.quantity) && unitCost === savedCost) return;
+    if (!quantity || Number(quantity) <= 0 || (costEdited && (!unitCost || Number(unitCost) < 0))) return;
+    const timer = window.setTimeout(() => { void saveChanges(); }, 400);
+    saveTimer.current = timer;
+    return () => window.clearTimeout(timer);
+  }, [quantity, unitCost, position, jobId, notes, unit, productId, costEdited]);
 
   const productOptions = useMemo(
     () => catalog.filter((item) => !unit || item.unit === unit),
@@ -44,7 +76,22 @@ export function PositionDrawer({
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    await saveChanges();
+  }
+
+  async function saveChanges() {
     if (!jobId || !position) return;
+    if (saving.current) return false;
+    window.clearTimeout(saveTimer.current);
+    if (!quantity || !Number.isFinite(Number(quantity)) || Number(quantity) <= 0) {
+      setError("Enter a positive quantity.");
+      return false;
+    }
+    if (costEdited && (!unitCost || !Number.isFinite(Number(unitCost)) || Number(unitCost) < 0)) {
+      setError("Enter a non-negative unit cost.");
+      return false;
+    }
+    saving.current = true;
     setSaving(true);
     setError(null);
     try {
@@ -52,19 +99,23 @@ export function PositionDrawer({
         quantity: Number(quantity),
         unit,
         matched_product_id: productId || null,
-        estimator_notes: notes
+        estimator_notes: notes,
+        ...(costEdited ? { net_unit_cost_chf: Number(unitCost) } : {})
       });
       onSaved(updated);
+      return true;
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Could not save review changes.");
+      return false;
     } finally {
+      saving.current = false;
       setSaving(false);
     }
   }
 
   return (
     <aside className="drawer" aria-label="Position traceability">
-      <button className="icon-button drawer-close" type="button" onClick={onClose} aria-label="Close details">
+      <button className="icon-button drawer-close" type="button" disabled={isSaving} onClick={async () => { if (!dirty || await saveChanges()) onClose(); }} aria-label="Close details">
         <X size={20} />
       </button>
       <p className="eyebrow">Source page {position.source_page}</p>
@@ -128,13 +179,22 @@ export function PositionDrawer({
             min="0.0001"
             step="0.0001"
             value={quantity}
-            disabled={!canEdit}
+            disabled={!canEdit || isSaving}
             onChange={(event) => setQuantity(event.target.value)}
           />
         </label>
         <label>
+          Unit Cost (CHF)
+          <input type="number" min="0" step="0.01" value={unitCost}
+            disabled={!canEdit || isSaving || !productId || !["calculated", "supplier_quote_required"].includes(position.status)}
+            onChange={(event) => { setUnitCost(event.target.value); setCostEdited(true); }} />
+        </label>
+        <p>Net material cost per unit; labour and allowances are recalculated by the backend.</p>
+        {costEdited ? <span className="status-badge">Edited unit cost</span> : null}
+        {isSaving ? <p role="status">Saving and recalculating...</p> : null}
+        <label>
           Unit
-          <select value={unit} disabled={!canEdit} onChange={(event) => setUnit(event.target.value)}>
+          <select value={unit} disabled={!canEdit || isSaving} onChange={(event) => setUnit(event.target.value)}>
             {["pc", "m", "m2", "h", "LS", "system"].map((option) => (
               <option key={option} value={option}>
                 {option}
@@ -144,7 +204,7 @@ export function PositionDrawer({
         </label>
         <label>
           Catalogue product
-          <select value={productId} disabled={!canEdit} onChange={(event) => setProductId(event.target.value)}>
+          <select value={productId} disabled={!canEdit || isSaving} onChange={(event) => setProductId(event.target.value)}>
             <option value="">No product selected</option>
             {productOptions.map((item) => (
               <option key={item.product_id} value={item.product_id}>
@@ -155,7 +215,7 @@ export function PositionDrawer({
         </label>
         <label>
           Estimator notes
-          <textarea value={notes} disabled={!canEdit} onChange={(event) => setNotes(event.target.value)} />
+          <textarea value={notes} disabled={!canEdit || isSaving} onChange={(event) => setNotes(event.target.value)} />
         </label>
         {position.review_state?.recalculation_status ? (
           <p className="inline-message">State: {position.review_state.recalculation_status}</p>

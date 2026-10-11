@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 from typing import Any
 
 from .api_service import (
@@ -51,7 +52,7 @@ def validate_review_patch(
     patch: dict[str, Any],
     data: dict[str, Any],
 ) -> dict[str, Any]:
-    allowed = {"quantity", "unit", "matched_product_id", "estimator_notes"}
+    allowed = {"quantity", "unit", "matched_product_id", "estimator_notes", "net_unit_cost_chf"}
     unknown = sorted(set(patch) - allowed)
     if unknown:
         raise ReviewValidationError(f"Unsupported review fields: {', '.join(unknown)}")
@@ -62,9 +63,20 @@ def validate_review_patch(
             quantity = float(patch["quantity"])
         except (TypeError, ValueError) as exc:
             raise ReviewValidationError("Quantity must be a positive number.") from exc
-        if quantity <= 0:
+        if not math.isfinite(quantity) or quantity <= 0:
             raise ReviewValidationError("Quantity must be greater than zero.")
         normalized["quantity"] = quantity
+
+    if "net_unit_cost_chf" in patch:
+        cost = patch["net_unit_cost_chf"]
+        if cost is not None:
+            try:
+                cost = float(cost)
+            except (TypeError, ValueError) as exc:
+                raise ReviewValidationError("Unit cost must be a finite non-negative number.") from exc
+            if not math.isfinite(cost) or cost < 0:
+                raise ReviewValidationError("Unit cost must be a finite non-negative number.")
+        normalized["net_unit_cost_chf"] = cost
 
     if "unit" in patch:
         unit = str(patch["unit"])
@@ -108,6 +120,7 @@ def apply_review_state(
         for row in updated["positions"]
     ]
     updated["positions"] = positions
+    updated["position_count"] = len(positions)
     updated["status_counts"] = _status_counts(positions)
     duplicate_rows = [row for row in positions if row.get("duplicate_group_id")]
     conflict_rows = [row for row in positions if row.get("conflict_flags")]
@@ -137,7 +150,7 @@ def apply_position_review(
     row["machine_values"] = _machine_values(base_row)
     row["review_state"] = {
         "has_overrides": bool(review_entry),
-        "overridden_fields": sorted(review_entry.keys()),
+        "overridden_fields": sorted(key for key in review_entry if key != "net_unit_cost_chf" or review_entry[key] is not None),
         "estimator_notes": review_entry.get("estimator_notes", ""),
         "updated_at": review_entry.get("updated_at"),
         "pricing_authorized": row.get("pricing_authorized", False),
@@ -184,7 +197,11 @@ def apply_position_review(
         return row
 
     position = _position_from_row(row)
-    priced = calculate_matched_position(position, product, productivity, data["parameters"])
+    pricing_product = dict(product)
+    if review_entry.get("net_unit_cost_chf") is not None:
+        row["price_source"] = "estimator_override"
+        pricing_product["net_cost_chf"] = str(review_entry["net_unit_cost_chf"])
+    priced = calculate_matched_position(position, pricing_product, productivity, data["parameters"])
     conflicts = _merge_conflicts(base_row.get("conflict_flags", []), _catalogue_conflicts(position, product))
     row["conflict_flags"] = conflicts
     critical_conflicts = [flag for flag in conflicts if flag.get("code") in CRITICAL_CONFLICT_CODES]
@@ -217,6 +234,11 @@ def apply_position_review(
             row["review_state"]["recalculation_status"] = "preview_only_conflict_review_required"
 
     row["review_state"]["pricing_authorized"] = pricing_authorized
+    if review_entry.get("net_unit_cost_chf") is not None:
+        row["material_cost_basis"] = "estimator_net_unit_cost_override"
+        row["direct_cost_basis"] = "estimator_material_estimate_plus_labour_estimate"
+        if not row["supplier_quote_required"]:
+            row["cost_confirmation_status"] = "estimator_cost_basis"
     _set_accepted_cost_fields(row)
     return _normalise_position_payload(row, data)
 

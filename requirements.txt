@@ -1,7 +1,8 @@
 fastapi==0.115.6
 uvicorn==0.54.0
-httpx==0.27.2
+httpx==0.28.1
 python-multipart==0.0.32
 pdfplumber==0.11.9
 pypdf==6.10.0
 reportlab==4.4.9
+docling==2.137.0

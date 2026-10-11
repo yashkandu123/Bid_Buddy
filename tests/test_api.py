@@ -219,6 +219,9 @@ def _pdf_bytes(lines: list[str]) -> io.BytesIO:
 
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer)
+    page_height = 841.8898
+    for x in (440.2, 488.3, 562.0):
+        pdf.line(x, 40, x, page_height - 40)
     y = 800
     for line in lines:
         pdf.drawString(40, y, line)

@@ -34,6 +34,8 @@ The job registry is still in memory, but completed jobs can now be recovered fro
 ## Limitations
 
 - Mapping remains conservative. Ambiguous source-line matches are skipped rather than guessed.
+- Price-column boundaries must be detected from PDF geometry; there is no fixed-coordinate fallback.
+- Overlay text starts at 13 pt and is reduced only when required by validated cell width or row spacing. The current full-tender validation used 13 pt or 10.4 pt.
+- Rotated pages are left blank unless a page-specific coordinate transform has been validated.
 - Supplier-package catalogue estimates remain provisional and are not exported as final accepted prices.
-- Full 202-page tender export has not been validated in this phase.
 - No database, queue, LLM, or alternate overlay engine was added.

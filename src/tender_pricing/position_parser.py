@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, replace
 
 from .pdf_ingestion import PdfPageText
 
@@ -9,6 +9,14 @@ from .pdf_ingestion import PdfPageText
 UNIT_MAP = {
     "Stk": "pc",
     "Stk.": "pc",
+    "pc": "pc",
+    "pcs": "pc",
+    "piece": "pc",
+    "pieces": "pc",
+    "pièce": "pc",
+    "pièces": "pc",
+    "pce": "pc",
+    "pces": "pc",
     "Std": "h",
     "Std.": "h",
     "m2": "m2",
@@ -22,15 +30,22 @@ UNIT_MAP = {
     "System": "system",
 }
 
-UNIT_PATTERN = r"Stk\.?|Std\.?|m²|m³|m2|m3|mm|m|h|LS|System"
+# A bare hour unit is lowercase-only. The surrounding expressions are otherwise
+# case-insensitive, so this local flag prevents dimension labels such as "B x H".
+HOUR_UNIT_PATTERN = r"(?-i:h)"
+UNIT_PATTERN = rf"Stk\.?|Std\.?|pièces|pièce|pieces|piece|pces|pcs|pce|pc|m²|m³|m2|m3|mm|m|{HOUR_UNIT_PATTERN}|LS|System"
+COUNT_UNIT_PATTERN = rf"Stk\.?|Std\.?|pièces|pièce|pieces|piece|pces|pcs|pce|pc|m²|m³|m2|m3|{HOUR_UNIT_PATTERN}|LS|System"
 QUANTITY_RE = re.compile(
     rf"(?P<prefix>.*?)\b(?P<unit>{UNIT_PATTERN})\s+(?P<quantity>\d+(?:[.,]\d+)?)\b",
+    re.IGNORECASE,
 )
 UNIT_ONLY_RE = re.compile(
-    rf"(?P<prefix>.*?)\b(?P<unit>Stk\.?|Std\.?|m²|m³|m2|m3|LS|System)\s*$",
+    rf"(?P<prefix>.*?)\b(?P<unit>{COUNT_UNIT_PATTERN})\s*$",
+    re.IGNORECASE,
 )
 REVERSE_QUANTITY_RE = re.compile(
-    r"(?P<prefix>.*?)(?<![-\d])(?P<quantity>\d+(?:[.,]\d+)?)\s+(?P<unit>Stk\.?|Std\.?|m²|m³|m2|m3|LS|System)(?!/)\b",
+    rf"(?P<prefix>.*?)(?<![-\d])(?P<quantity>\d+(?:[.,]\d+)?)\s+(?P<unit>{COUNT_UNIT_PATTERN})(?!/)\b",
+    re.IGNORECASE,
 )
 SYSTEM_RE = re.compile(r"SH Erlenstrasse Oberglatt\s+(?P<system>244\.\d+\s+.*?)\s+Seite")
 DIMENSION_RE = re.compile(
@@ -77,6 +92,29 @@ def parse_lv_positions(pages: list[PdfPageText]) -> list[ExtractedPosition]:
 
 
 def parse_page_positions(page: PdfPageText) -> list[ExtractedPosition]:
+    primary = _parse_page_positions_text(
+        PdfPageText(page_number=page.page_number, text=page.text, extraction_backend=page.extraction_backend)
+    )
+    if not page.structured_text or page.structured_text.strip() == page.text.strip():
+        return primary
+    supplemental = _parse_page_positions_text(
+        PdfPageText(page_number=page.page_number, text=page.structured_text, extraction_backend="docling_structured")
+    )
+    merged = list(primary)
+    for candidate in supplemental:
+        if any(_same_source_position(candidate, existing) for existing in merged):
+            continue
+        merged.append(
+            replace(
+                candidate,
+                lv_id=f"PDF{page.page_number:03d}-{len(merged) + 1:02d}",
+                evidence="Docling structured evidence:\n" + candidate.evidence,
+            )
+        )
+    return merged
+
+
+def _parse_page_positions_text(page: PdfPageText) -> list[ExtractedPosition]:
     lines = [_clean_line(line) for line in page.text.splitlines()]
     lines = [line for line in lines if line]
     system = _extract_system(lines)
@@ -86,9 +124,11 @@ def parse_page_positions(page: PdfPageText) -> list[ExtractedPosition]:
     context: list[str] = []
     positions: list[ExtractedPosition] = []
 
-    for line in lines:
+    for line_index, line in enumerate(lines):
         if _is_noise_line(line):
             continue
+        if re.match(r"(?:Drehantrieb|Stellantrieb|Kanaltemperatur|Druckdifferenz|Druckw[aä]chter|Frostschutzw[aä]chter)", line, re.IGNORECASE):
+            context = []
         if _looks_like_heading(line):
             context = [line]
         match = QUANTITY_RE.search(line)
@@ -97,6 +137,11 @@ def parse_page_positions(page: PdfPageText) -> list[ExtractedPosition]:
             unit = UNIT_MAP[_canonical_unit_key(original_unit)]
             quantity = float(match.group("quantity").replace(",", "."))
             description_lines = _description_context(context, line)
+            if re.match(r"(?:Drehantrieb|Stellantrieb)\b", line, re.IGNORECASE):
+                # Only the adjacent electrical specification belongs to this device.
+                following = lines[line_index + 1:line_index + 2]
+                if following and re.match(r"(?:AC/DC|AC|DC)\s+\d+\s*V\b", following[0], re.IGNORECASE):
+                    description_lines.extend(following)
             description = " ".join(description_lines)
             evidence = "\n".join(description_lines[-8:])
             positions.append(
@@ -154,6 +199,20 @@ def parse_page_positions(page: PdfPageText) -> list[ExtractedPosition]:
         context.append(line)
         context = context[-60:]
     return positions
+
+
+def _same_source_position(left: ExtractedPosition, right: ExtractedPosition) -> bool:
+    if left.unit != right.unit or abs(left.quantity - right.quantity) > 0.0001:
+        return False
+    left_text = re.sub(r"\W+", " ", left.source_line.casefold()).strip()
+    right_text = re.sub(r"\W+", " ", right.source_line.casefold()).strip()
+    if not left_text or not right_text:
+        return False
+    if left_text in right_text or right_text in left_text:
+        return True
+    left_tokens = set(left_text.split())
+    right_tokens = set(right_text.split())
+    return len(left_tokens & right_tokens) / max(len(left_tokens), len(right_tokens)) >= 0.8
 
 
 def _make_position(

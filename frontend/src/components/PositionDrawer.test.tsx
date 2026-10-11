@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PositionDrawer } from "./PositionDrawer";
@@ -12,6 +12,27 @@ vi.mock("../app/apiClient", () => ({
 describe("PositionDrawer", () => {
   beforeEach(() => {
     vi.mocked(updatePositionReview).mockReset();
+  });
+
+  it("saves a manual unit cost through the calculation API", async () => {
+    const user = userEvent.setup();
+    vi.mocked(updatePositionReview).mockResolvedValue(result());
+    render(<PositionDrawer position={position()} catalog={catalog()} jobId="abc123" onClose={vi.fn()} onSaved={vi.fn()} />);
+    await user.clear(screen.getByLabelText(/unit cost/i));
+    await user.type(screen.getByLabelText(/unit cost/i), "100");
+    await user.click(screen.getByRole("button", { name: /save and recalculate/i }));
+    expect(updatePositionReview).toHaveBeenCalledWith("abc123", "PDF001-01", expect.objectContaining({ net_unit_cost_chf: 100 }));
+    expect(screen.getByText(/edited unit cost/i)).toBeInTheDocument();
+  });
+
+  it("automatically recalculates quantity edits and surfaces backend errors", async () => {
+    const user = userEvent.setup();
+    vi.mocked(updatePositionReview).mockRejectedValue(new Error("Recalculation failed"));
+    render(<PositionDrawer position={position()} catalog={catalog()} jobId="abc123" onClose={vi.fn()} onSaved={vi.fn()} />);
+    await user.clear(screen.getByLabelText(/quantity/i));
+    await user.type(screen.getByLabelText(/quantity/i), "8");
+    await waitFor(() => expect(updatePositionReview).toHaveBeenCalledWith("abc123", "PDF001-01", expect.objectContaining({ quantity: 8 })));
+    expect(await screen.findByText("Recalculation failed")).toBeInTheDocument();
   });
 
   it("saves supported estimator fields through the backend API", async () => {

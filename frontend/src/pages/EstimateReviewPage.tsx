@@ -9,8 +9,11 @@ import { PositionDrawer } from "../components/PositionDrawer";
 import { PositionTable } from "../components/PositionTable";
 import { ProductTypeTabs } from "../components/ProductTypeTabs";
 import { TotalsPanel } from "../components/TotalsPanel";
+import { WorkflowFooter } from "../components/WorkflowFooter";
+import { useReviewNavigation } from "../app/ReviewNavigationContext";
 
 export function EstimateReviewPage() {
+  const { pending } = useReviewNavigation();
   const params = useParams();
   const jobId = params.jobId ?? window.localStorage.getItem("lastTenderJobId");
   const [result, setResult] = useState<TenderResult | null>(null);
@@ -26,7 +29,7 @@ export function EstimateReviewPage() {
   const [isLoading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!jobId || params.jobId === undefined) return;
+    if (!jobId) return;
     void loadJobResult(jobId);
   }, [jobId, params.jobId]);
 
@@ -106,9 +109,8 @@ export function EstimateReviewPage() {
 
   return (
     <div className="page-stack">
-      <PageHeader eyebrow="03 · Structure and match" title="Estimate & human review">
-        Read-only Phase 8B view of backend results. Product-type tabs organize positions without changing pricing status
-        or accepting uncertain matches.
+      <PageHeader eyebrow="02 · Structure and match" title="Estimate & human review">
+        Review tender positions, catalogue evidence, and estimator changes.
       </PageHeader>
 
       {!result ? (
@@ -185,7 +187,7 @@ export function EstimateReviewPage() {
                 </select>
               </label>
             </div>
-            <PositionTable positions={pagePositions} onSelect={setSelectedPosition} />
+            <PositionTable positions={pagePositions} onSelect={position => { if (!pending) setSelectedPosition(position); }} />
             <div className="pagination">
               <button className="secondary-button" type="button" disabled={page === 1} onClick={() => setPage(page - 1)}>
                 Previous
@@ -217,6 +219,7 @@ export function EstimateReviewPage() {
           />
         </>
       )}
+      <WorkflowFooter previous={{ to: result?.job_id ? `/processing/${result.job_id}` : "/", label: "Upload" }} next={{ to: `/bid/${result?.job_id ?? ""}`, label: "Bid Optimization" }} disabledReason={result?.job_id ? undefined : "Load a completed upload job to continue."} />
     </div>
   );
 }
