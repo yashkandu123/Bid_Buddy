@@ -10,10 +10,16 @@ import type {
   TenderResult
 } from "./types";
 
-const DEFAULT_API_BASE_URL = "http://127.0.0.1:8000";
+const LOCAL_API_BASE_URL = "http://127.0.0.1:8000";
+const CLOUD_API_BASE_URL = "/api";
 
-export const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? DEFAULT_API_BASE_URL;
+export function resolveApiBaseUrl(configuredUrl: string | undefined, isDevelopment: boolean): string {
+  const configured = configuredUrl?.trim();
+  if (configured) return configured.replace(/\/+$/, "");
+  return isDevelopment ? LOCAL_API_BASE_URL : CLOUD_API_BASE_URL;
+}
+
+export const API_BASE_URL = resolveApiBaseUrl(import.meta.env.VITE_API_BASE_URL, import.meta.env.DEV);
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;

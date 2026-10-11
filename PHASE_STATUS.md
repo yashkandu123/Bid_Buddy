@@ -1,5 +1,15 @@
 # Project Phase Status
 
+## Cloud `/api/jobs` routing fix (2026-10-11)
+
+- Root cause: the React production client called the deployment's same-origin `/api` base, producing `POST /api/jobs`, while FastAPI registered only root paths such as `/jobs`. Local Vite worked because its default base was `http://127.0.0.1:8000`, so it called the registered root route directly. No reverse-proxy/container configuration exists in this repository to strip `/api` before FastAPI.
+- Moved the existing FastAPI endpoint decorators to one `APIRouter` and mounted that unchanged router at both root and `/api`. Upload, job status/results, review edits, bid scenarios/selections and final-offer endpoints now support both preserved-prefix and stripped-prefix proxy conventions.
+- Frontend API base selection is explicit: Vite development defaults to direct local FastAPI; production defaults to same-origin `/api`; a non-empty `VITE_API_BASE_URL` remains authoritative and has trailing slashes normalized.
+- Added a real multipart TestClient regression that uploads and processes a small PDF through both `/jobs` and `/api/jobs`, then retrieves status and results using the corresponding prefix. Added route-parity coverage for every application endpoint and frontend tests for development, production and configured API bases.
+- Documented required reverse-proxy ordering in `docs/project/DEPLOYMENT_READINESS.md`: `/api/*` must reach Uvicorn before the SPA fallback. The cloud host itself is authentication-protected and returned 401 to unauthenticated probes, so the deployed fix still requires rebuilding/redeploying both backend and frontend before live verification.
+- Validation: backend `162 passed` with 70 subtests and 95 deprecation warnings; frontend `26 passed` across 10 suites; TypeScript/Vite production build passed with 1,702 modules. The generated production JavaScript contains `/api` and no localhost API base. No pricing, job processing, matching, PDF overlay or UI workflow behavior changed. No commit or push.
+- Recommendation only: redeploy, verify `GET /api/health`, upload one controlled PDF through `POST /api/jobs`, and confirm the returned ID through `/api/jobs/{id}` and `/api/jobs/{id}/results`.
+
 ## Deployment readiness cleanup (2026-10-11)
 
 - Promoted the audited 229-row full-tender display manifest from ignored evaluation output to `data/full_tender_user_inventory.jsonl`; production inventory projection now behaves consistently in a clean checkout. Required `catalog.csv`, `productivity.csv` and `project_parameters.json` are versioned inputs rather than ignored local files.

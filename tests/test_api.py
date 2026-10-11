@@ -8,6 +8,7 @@ from pathlib import Path
 
 try:
     from fastapi import HTTPException
+    from fastapi.testclient import TestClient
     from pydantic import ValidationError
 except ModuleNotFoundError:  # pragma: no cover - exercised in environments without FastAPI
     HTTPException = None
@@ -23,6 +24,7 @@ if HTTPException is not None:
         generate_final_offer,
         get_catalog,
         get_final_offer_report,
+        get_job_store,
         get_project_root,
         get_review_state,
         health,
@@ -56,6 +58,53 @@ class Phase3ApiTests(unittest.TestCase):
 
         self.assertEqual(body["status"], "ok")
         self.assertEqual(body["schema_version"], "phase4.v1")
+
+    def test_job_workflow_supports_local_and_cloud_api_prefixes(self) -> None:
+        temp_dir = tempfile.mkdtemp(prefix=".api-prefix-test-", dir=PROJECT_ROOT)
+        try:
+            store = JobStore(PROJECT_ROOT, upload_root=Path(temp_dir), run_synchronously=True)
+            app.dependency_overrides[get_job_store] = lambda: store
+            with TestClient(app) as client:
+                for prefix in ("", "/api"):
+                    with self.subTest(prefix=prefix or "root"):
+                        upload = client.post(
+                            f"{prefix}/jobs",
+                            files={
+                                "file": (
+                                    "demo.pdf",
+                                    _pdf_bytes(_known_position_lines()).getvalue(),
+                                    "application/pdf",
+                                )
+                            },
+                        )
+                        self.assertEqual(upload.status_code, 200)
+                        job_id = upload.json()["job_id"]
+
+                        status = client.get(f"{prefix}/jobs/{job_id}")
+                        results = client.get(f"{prefix}/jobs/{job_id}/results")
+
+                        self.assertEqual(status.status_code, 200)
+                        self.assertEqual(status.json()["status"], "completed")
+                        self.assertEqual(results.status_code, 200)
+                        self.assertGreater(results.json()["position_count"], 0)
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def test_every_api_route_has_a_cloud_prefixed_alias(self) -> None:
+        route_signatures = {
+            (route.path, frozenset(route.methods or set()))
+            for route in app.routes
+            if hasattr(route, "methods")
+        }
+        root_routes = {
+            (path, methods)
+            for path, methods in route_signatures
+            if not path.startswith("/api") and path not in {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
+        }
+
+        for path, methods in root_routes:
+            with self.subTest(path=path):
+                self.assertIn((f"/api{path}", methods), route_signatures)
 
     def test_local_vite_cors_preflight_is_allowed(self) -> None:
         cors = next(middleware for middleware in app.user_middleware if middleware.cls.__name__ == "CORSMiddleware")

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -75,6 +75,7 @@ app = FastAPI(
     version="0.4.0",
     description="Thin API around the existing deterministic tender-pricing pipeline.",
 )
+api_router = APIRouter()
 
 app.add_middleware(
     CORSMiddleware,
@@ -88,12 +89,12 @@ app.add_middleware(
 )
 
 
-@app.get("/health")
+@api_router.get("/health")
 def health() -> dict[str, object]:
     return build_health_response()
 
 
-@app.post("/price/examples")
+@api_router.post("/price/examples")
 def price_verified_examples(
     request: VerifiedExamplesRequest,
     project_root: Path = Depends(get_project_root),
@@ -106,7 +107,7 @@ def price_verified_examples(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.post("/process/full-tender-output")
+@api_router.post("/process/full-tender-output")
 def process_full_tender_output(
     request: FullTenderOutputRequest,
     project_root: Path = Depends(get_project_root),
@@ -119,7 +120,7 @@ def process_full_tender_output(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.post("/jobs")
+@api_router.post("/jobs")
 def create_upload_job(
     file: UploadFile = File(...),
     job_store: JobStore = Depends(get_job_store),
@@ -137,7 +138,7 @@ def create_upload_job(
     }
 
 
-@app.get("/jobs/{job_id}")
+@api_router.get("/jobs/{job_id}")
 def get_job_status(
     job_id: str,
     job_store: JobStore = Depends(get_job_store),
@@ -148,7 +149,7 @@ def get_job_status(
         raise HTTPException(status_code=404, detail="Job not found.") from exc
 
 
-@app.get("/jobs/{job_id}/results")
+@api_router.get("/jobs/{job_id}/results")
 def get_job_results(
     job_id: str,
     job_store: JobStore = Depends(get_job_store),
@@ -168,7 +169,7 @@ def get_job_results(
         raise HTTPException(status_code=404, detail="Job result is missing.") from exc
 
 
-@app.get("/catalog")
+@api_router.get("/catalog")
 def get_catalog(project_root: Path = Depends(get_project_root)) -> dict[str, object]:
     data = load_project_data(project_root)
     return {
@@ -177,7 +178,7 @@ def get_catalog(project_root: Path = Depends(get_project_root)) -> dict[str, obj
     }
 
 
-@app.get("/jobs/{job_id}/review-state")
+@api_router.get("/jobs/{job_id}/review-state")
 def get_review_state(
     job_id: str,
     job_store: JobStore = Depends(get_job_store),
@@ -188,7 +189,7 @@ def get_review_state(
         raise HTTPException(status_code=404, detail="Job not found.") from exc
 
 
-@app.patch("/jobs/{job_id}/positions/{lv_id}/review")
+@api_router.patch("/jobs/{job_id}/positions/{lv_id}/review")
 def update_position_review(
     job_id: str,
     lv_id: str,
@@ -212,7 +213,7 @@ def update_position_review(
         raise HTTPException(status_code=404, detail="Job result is missing.") from exc
 
 
-@app.get("/jobs/{job_id}/bid-scenarios")
+@api_router.get("/jobs/{job_id}/bid-scenarios")
 def get_bid_scenarios(
     job_id: str,
     job_store: JobStore = Depends(get_job_store),
@@ -234,7 +235,7 @@ def get_bid_scenarios(
         raise HTTPException(status_code=404, detail="Job result is missing.") from exc
 
 
-@app.patch("/jobs/{job_id}/bid-selection")
+@api_router.patch("/jobs/{job_id}/bid-selection")
 def update_bid_selection(
     job_id: str,
     request: BidSelectionPatch,
@@ -256,7 +257,7 @@ def update_bid_selection(
         raise HTTPException(status_code=404, detail="Job result is missing.") from exc
 
 
-@app.post("/jobs/{job_id}/final-offer")
+@api_router.post("/jobs/{job_id}/final-offer")
 def generate_final_offer(
     job_id: str,
     job_store: JobStore = Depends(get_job_store),
@@ -278,7 +279,7 @@ def generate_final_offer(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.get("/jobs/{job_id}/final-offer")
+@api_router.get("/jobs/{job_id}/final-offer")
 def get_final_offer_report(
     job_id: str,
     job_store: JobStore = Depends(get_job_store),
@@ -291,7 +292,7 @@ def get_final_offer_report(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
-@app.get("/jobs/{job_id}/final-offer/pdf")
+@api_router.get("/jobs/{job_id}/final-offer/pdf")
 def download_final_offer_pdf(
     job_id: str,
     job_store: JobStore = Depends(get_job_store),
@@ -303,3 +304,10 @@ def download_final_offer_pdf(
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return FileResponse(path, media_type="application/pdf", filename=f"{job_id}_priced_offer.pdf")
+
+
+# Local development calls the API directly at the root. Cloud deployments use
+# a same-origin /api proxy. Register one router at both paths so the proxy may
+# either preserve or strip that prefix without changing endpoint behavior.
+app.include_router(api_router)
+app.include_router(api_router, prefix="/api")
